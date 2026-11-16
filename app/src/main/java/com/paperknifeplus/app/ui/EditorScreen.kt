@@ -36,6 +36,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -45,9 +56,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -55,6 +67,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -74,7 +87,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -84,11 +100,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
@@ -115,10 +138,11 @@ import kotlin.math.min
 
 private val PdfMime = arrayOf("application/pdf")
 private val ImageMime = arrayOf("image/*")
+private const val MaxRenderWidth = 2400
+private const val MaxZoom = 4f
 
 /** What to do once the user agrees to throw away unsaved edits. */
 private sealed interface PendingAction {
-    object PickPdf : PendingAction
     object Close : PendingAction
     data class Open(val uri: Uri) : PendingAction
 }
@@ -134,8 +158,12 @@ fun EditorScreen(
     val accent = MaterialTheme.colorScheme.primary
     val snackbar = remember { SnackbarHostState() }
     val gridState = rememberLazyGridState()
+    val scope = rememberCoroutineScope()
     var pendingAction by remember { mutableStateOf<PendingAction?>(null) }
     var density by rememberSaveable { mutableIntStateOf(0) }
+    // Reading view shows the pages full width, one after another; otherwise the organizer grid.
+    var reading by rememberSaveable { mutableStateOf(false) }
+    val readerState = rememberLazyListState()
 
     val pdfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.open(uri)
@@ -149,7 +177,6 @@ fun EditorScreen(
 
     fun perform(action: PendingAction) {
         when (action) {
-            PendingAction.PickPdf -> pdfPicker.launch(PdfMime)
             PendingAction.Close -> vm.closeDocument()
             is PendingAction.Open -> vm.open(action.uri)
         }
@@ -162,6 +189,8 @@ fun EditorScreen(
     LaunchedEffect(incomingPdf) {
         if (incomingPdf != null) {
             onIncomingHandled()
+            // A PDF handed over by another app is most likely meant to be read first.
+            if (!vm.dirty) reading = true
             guarded(PendingAction.Open(incomingPdf))
         }
     }
@@ -202,8 +231,27 @@ fun EditorScreen(
     }
 
     val hasDocument = vm.documentName != null
+    fun showReader(show: Boolean) {
+        if (show == reading) return
+        // Carry the position across so the same page stays in view.
+        val target = if (show) {
+            vm.pages.indexOfFirst { it.id in vm.selection }.takeIf { it >= 0 } ?: gridState.firstVisibleItemIndex
+        } else {
+            readerState.firstVisibleItemIndex
+        }
+        if (show) vm.clearSelection()
+        reading = show
+        scope.launch {
+            if (show) readerState.scrollToItem(target) else gridState.scrollToItem(target)
+        }
+    }
+
     BackHandler(enabled = hasDocument) {
-        if (vm.selection.isNotEmpty()) vm.clearSelection() else guarded(PendingAction.Close)
+        when {
+            reading -> showReader(false)
+            vm.selection.isNotEmpty() -> vm.clearSelection()
+            else -> guarded(PendingAction.Close)
+        }
     }
 
     Scaffold(
@@ -214,8 +262,9 @@ fun EditorScreen(
                 EditorTopBar(
                     vm = vm,
                     accent = accent,
+                    reading = reading,
                     onClose = { guarded(PendingAction.Close) },
-                    onOpen = { guarded(PendingAction.PickPdf) },
+                    onToggleReading = { showReader(!reading) },
                     onToggleDensity = { density = (density + 1) % 3 },
                     onSave = {
                         val base = (vm.documentName ?: "Document").removeSuffix(".pdf").removeSuffix(".PDF")
@@ -225,7 +274,7 @@ fun EditorScreen(
             }
         },
         bottomBar = {
-            if (hasDocument) {
+            if (hasDocument && !reading) {
                 EditorBottomBar(vm = vm, accent = accent, onAddImage = { imagePicker.launch(ImageMime) })
             }
         }
@@ -239,6 +288,8 @@ fun EditorScreen(
                 )
             } else if (vm.pages.isEmpty()) {
                 EmptyDocument()
+            } else if (reading) {
+                Reader(vm = vm, listState = readerState)
             } else {
                 val widthDp = LocalConfiguration.current.screenWidthDp
                 val columns = when (density) {
@@ -314,8 +365,9 @@ fun EditorScreen(
 private fun EditorTopBar(
     vm: EditorViewModel,
     accent: Color,
+    reading: Boolean,
     onClose: () -> Unit,
-    onOpen: () -> Unit,
+    onToggleReading: () -> Unit,
     onToggleDensity: () -> Unit,
     onSave: () -> Unit
 ) {
@@ -356,11 +408,17 @@ private fun EditorTopBar(
                     Text("SELECT ALL", fontSize = 11.sp, fontWeight = FontWeight.Black)
                 }
             } else {
-                IconButton(onClick = onToggleDensity) {
-                    Icon(Icons.Filled.GridView, contentDescription = "Change page size", modifier = Modifier.size(22.dp))
+                if (!reading) {
+                    IconButton(onClick = onToggleDensity) {
+                        Icon(Icons.Filled.ZoomIn, contentDescription = "Change thumbnail size", modifier = Modifier.size(22.dp))
+                    }
                 }
-                IconButton(onClick = onOpen) {
-                    Icon(Icons.Filled.FolderOpen, contentDescription = "Open another PDF", modifier = Modifier.size(22.dp))
+                IconButton(onClick = onToggleReading) {
+                    if (reading) {
+                        Icon(Icons.Filled.GridView, contentDescription = "Organize pages", modifier = Modifier.size(22.dp))
+                    } else {
+                        Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "Read", modifier = Modifier.size(22.dp))
+                    }
                 }
             }
             Spacer(Modifier.width(4.dp))
@@ -398,14 +456,14 @@ private fun EditorBottomBar(vm: EditorViewModel, accent: Color, onAddImage: () -
         ) {
             Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 BarAction(Icons.Filled.AddPhotoAlternate, "ADD IMAGE", true, accent, onAddImage)
-                BarAction(Icons.AutoMirrored.Filled.ArrowBack, "EARLIER", selecting && vm.canShiftSelection(-1), accent) {
+                BarAction(Icons.Filled.ArrowUpward, "MOVE UP", selecting && vm.canShiftSelection(-1), accent) {
                     vm.shiftSelection(-1)
                 }
-                BarAction(Icons.AutoMirrored.Filled.ArrowForward, "LATER", selecting && vm.canShiftSelection(1), accent) {
+                BarAction(Icons.Filled.ArrowDownward, "MOVE DOWN", selecting && vm.canShiftSelection(1), accent) {
                     vm.shiftSelection(1)
                 }
-                BarAction(Icons.Filled.RotateLeft, "LEFT", selecting, accent) { vm.rotateSelection(-90) }
-                BarAction(Icons.Filled.RotateRight, "RIGHT", selecting, accent) { vm.rotateSelection(90) }
+                BarAction(Icons.Filled.RotateLeft, "ROTATE L", selecting, accent) { vm.rotateSelection(-90) }
+                BarAction(Icons.Filled.RotateRight, "ROTATE R", selecting, accent) { vm.rotateSelection(90) }
                 BarAction(Icons.Filled.DeleteOutline, "DELETE", selecting, accent, vm::deleteSelection)
             }
         }
@@ -502,16 +560,26 @@ private fun PageTile(
 
 /** Draws the page upright-fitted inside the available box, animating any rotation the user applied. */
 @Composable
-private fun PageThumbnail(workspace: PdfWorkspace, page: PageItem, modifier: Modifier = Modifier) {
+private fun PageThumbnail(
+    workspace: PdfWorkspace,
+    page: PageItem,
+    modifier: Modifier = Modifier,
+    renderScale: Int = 1,
+    onLoaded: (ImageBitmap) -> Unit = {}
+) {
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
         val boxWidth = constraints.maxWidth
         val boxHeight = constraints.maxHeight
         // Round the render width up so small layout changes reuse the cached bitmap.
-        val renderWidth = ((boxWidth + 95) / 96 * 96).coerceAtLeast(96)
+        val renderWidth = (((boxWidth + 95) / 96 * 96).coerceAtLeast(96) * renderScale).coerceAtMost(MaxRenderWidth)
 
         var bitmap by remember(page.source) { mutableStateOf<ImageBitmap?>(null) }
         LaunchedEffect(page.source, renderWidth) {
-            workspace.thumbnail(page.source, renderWidth)?.let { bitmap = it.asImageBitmap() }
+            workspace.thumbnail(page.source, renderWidth)?.let {
+                val loaded = it.asImageBitmap()
+                bitmap = loaded
+                onLoaded(loaded)
+            }
         }
 
         val angle by animateFloatAsState(page.rotation.toFloat(), label = "rotation")
@@ -537,6 +605,112 @@ private fun PageThumbnail(workspace: PdfWorkspace, page: PageItem, modifier: Mod
                 )
             }
         }
+    }
+}
+
+/**
+ * Continuous reading view of the document as it currently stands, edits included.
+ * Pinch or double-tap to zoom; one finger scrolls, and pans sideways when zoomed.
+ */
+@Composable
+private fun Reader(vm: EditorViewModel, listState: LazyListState) {
+    val scope = rememberCoroutineScope()
+    val isDark = MaterialTheme.colorScheme.background == Color.Black
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+
+    BoxWithConstraints(Modifier.fillMaxSize().clipToBounds()) {
+        val width = constraints.maxWidth.toFloat()
+
+        // Zooms to [target] while keeping the content under [anchor] where it is.
+        fun zoomTo(target: Float, anchor: Offset) {
+            val next = target.coerceIn(1f, MaxZoom)
+            if (next == zoom) return
+            val scrollBy = anchor.y / zoom - anchor.y / next
+            offsetX = (anchor.x - (anchor.x - offsetX) * next / zoom).coerceIn(width - width * next, 0f)
+            zoom = next
+            scope.launch { listState.scrollBy(scrollBy) }
+        }
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(width) {
+                    detectTapGestures(onDoubleTap = { zoomTo(if (zoom > 1f) 1f else 2.5f, it) })
+                }
+                .pointerInput(width) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        do {
+                            // Seen before the list, so a pinch never turns into a scroll.
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val pressed = event.changes.count { it.pressed }
+                            if (pressed >= 2) {
+                                val pan = event.calculatePan()
+                                zoomTo(zoom * event.calculateZoom(), event.calculateCentroid(useCurrent = false))
+                                offsetX = (offsetX + pan.x).coerceIn(width - width * zoom, 0f)
+                                scope.launch { listState.scrollBy(-pan.y / zoom) }
+                                event.changes.forEach { it.consume() }
+                            } else if (pressed == 1 && zoom > 1f) {
+                                // Left unconsumed: the list still handles the vertical part.
+                                offsetX = (offsetX + event.changes.first().positionChange().x)
+                                    .coerceIn(width - width * zoom, 0f)
+                            }
+                        } while (event.changes.any { it.pressed })
+                    }
+                }
+                .graphicsLayer {
+                    scaleX = zoom
+                    scaleY = zoom
+                    translationX = offsetX
+                    transformOrigin = TransformOrigin(0f, 0f)
+                },
+            contentPadding = PaddingValues(vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(vm.pages, key = { it.id }) { page ->
+                // Width over height of the upright page; a portrait sheet until the real one is known.
+                var ratio by remember(page.source) { mutableFloatStateOf(0.707f) }
+                val sideways = page.rotation % 180 != 0
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(if (sideways) 1f / ratio else ratio)
+                        .background(if (isDark) Color(0xFF1C1C1E) else Color(0xFFEFEFF1))
+                ) {
+                    PageThumbnail(
+                        workspace = vm.workspace,
+                        page = page,
+                        modifier = Modifier.fillMaxSize(),
+                        renderScale = if (zoom > 1.4f) 2 else 1,
+                        onLoaded = { ratio = it.width.toFloat() / it.height }
+                    )
+                }
+            }
+        }
+
+        val current by remember {
+            derivedStateOf {
+                val info = listState.layoutInfo
+                val middle = (info.viewportStartOffset + info.viewportEndOffset) / 2 / zoom
+                val item = info.visibleItemsInfo.lastOrNull { it.offset <= middle } ?: info.visibleItemsInfo.firstOrNull()
+                (item?.index ?: 0) + 1
+            }
+        }
+        Text(
+            text = "$current / ${vm.pages.size}",
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 16.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.6f))
+                .padding(horizontal = 14.dp, vertical = 5.dp),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Black,
+            color = Color.White
+        )
     }
 }
 

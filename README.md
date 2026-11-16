@@ -19,7 +19,8 @@ and drops everything except organizing the pages of one PDF.
 ## What it does
 
 - **See every page** of a PDF as a thumbnail grid, at three zoom levels
-- **Reorder** pages by holding and dragging, or with the Earlier / Later buttons
+- **Read** the PDF in a continuous full-width view with pinch and double-tap zoom
+- **Reorder** pages by holding and dragging, or with the Move up / Move down buttons
 - **Rotate** and **delete** the pages you select
 - **Add pages from image files** (JPEG, PNG, WebP and anything else Android can decode)
 - **Save** the result as a new PDF, or over the original
