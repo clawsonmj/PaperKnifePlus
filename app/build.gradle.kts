@@ -70,6 +70,11 @@ android {
         }
     }
     buildFeatures { compose = true }
+    androidResources {
+        // PDFBox ships fonts and character maps as assets. Nothing here draws text
+        // through PDFBox, so they are left out of the APK.
+        ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:.*:<dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~:<dir>tom_roush"
+    }
     lint { abortOnError = false }
 }
 
@@ -87,5 +92,8 @@ dependencies {
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons.extended)
-    implementation(libs.pdfbox.android)
+    implementation(libs.pdfbox.android) {
+        // Only needed for certificate-encrypted PDFs; leaving it out saves several MB.
+        exclude(group = "org.bouncycastle")
+    }
 }

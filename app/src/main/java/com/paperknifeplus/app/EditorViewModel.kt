@@ -62,6 +62,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 events.trySend(EditorEvent.Message(e.message ?: "Something went wrong"))
             } catch (e: OutOfMemoryError) {
                 events.trySend(EditorEvent.Message("Not enough memory for this file"))
+            } catch (e: LinkageError) {
+                // Raised for PDF features whose support code is left out of this build.
+                events.trySend(EditorEvent.Message("This kind of PDF isn't supported"))
             } finally {
                 busy = null
             }
