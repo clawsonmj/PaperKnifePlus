@@ -3,26 +3,13 @@
 -allowaccessmodification
 -mergeinterfacesaggressively
 
-# PDFBox-Android R8/ProGuard Rules (Refined)
-# Only keep necessary components for font loading and reflection
--keep class com.tom_roush.pdfbox.pdmodel.font.PDFont { *; }
--keep class com.tom_roush.pdfbox.pdmodel.font.PDType0Font { *; }
--keep class com.tom_roush.pdfbox.pdmodel.font.PDType1Font { *; }
--keep class com.tom_roush.pdfbox.pdmodel.font.PDTrueTypeFont { *; }
--keep class com.tom_roush.pdfbox.pdmodel.font.PDCIDFontType2 { *; }
--keep class com.tom_roush.pdfbox.pdmodel.font.PDSimpleFont { *; }
--keep class com.tom_roush.pdfbox.pdmodel.font.PDType3Font { *; }
-
-# Allow stripping of unused filters and components
+# PDFBox-Android: only page-tree edits and image embedding are used, so R8 can
+# strip the rest. These optional dependencies are referenced but never shipped.
 -dontwarn com.tom_roush.pdfbox.filter.JPXFilter
 -dontwarn com.gemalto.jp2.**
 -dontwarn org.bouncycastle.**
 -dontwarn javax.xml.stream.**
 
-# Compose and Material3 rules are automatically included in the libraries.
-# Generic keep rules here are redundant and prevent optimization.
-# (Removed)
-
-# Coil
--keep class coil.** { *; }
--dontwarn coil.**
+# The password handler is created reflectively when a protected PDF is opened.
+-keep class com.tom_roush.pdfbox.pdmodel.encryption.StandardSecurityHandler { <init>(...); }
+-keep class com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy { <init>(...); }

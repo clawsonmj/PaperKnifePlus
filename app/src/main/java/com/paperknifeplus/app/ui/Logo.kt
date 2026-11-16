@@ -1,4 +1,4 @@
-package com.paperknifeplus.app.ui.components
+package com.paperknifeplus.app.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
