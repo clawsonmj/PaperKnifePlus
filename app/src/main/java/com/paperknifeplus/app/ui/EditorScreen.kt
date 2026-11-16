@@ -1,6 +1,7 @@
 package com.paperknifeplus.app.ui
 
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -141,6 +142,15 @@ private val ImageMime = arrayOf("image/*")
 private const val MaxRenderWidth = 2400
 private const val MaxZoom = 4f
 
+/**
+ * The stock contract asks for every file type and passes PDF only as a hint, which
+ * some file pickers ignore. Asking for PDF as the type itself is honored more widely.
+ */
+private class OpenPdf : ActivityResultContracts.OpenDocument() {
+    override fun createIntent(context: Context, input: Array<String>): Intent =
+        super.createIntent(context, input).setType("application/pdf")
+}
+
 /** What to do once the user agrees to throw away unsaved edits. */
 private sealed interface PendingAction {
     object Close : PendingAction
@@ -165,7 +175,7 @@ fun EditorScreen(
     var reading by rememberSaveable { mutableStateOf(false) }
     val readerState = rememberLazyListState()
 
-    val pdfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val pdfPicker = rememberLauncherForActivityResult(OpenPdf()) { uri ->
         if (uri != null) vm.open(uri)
     }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
